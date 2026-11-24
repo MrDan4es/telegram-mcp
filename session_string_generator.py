@@ -35,6 +35,7 @@ from telethon.sync import TelegramClient
 from telegram_mcp.account_labels import canonical_account_label
 from telegram_mcp.client_identity import client_identity_kwargs
 from telegram_mcp.install_guard import UnsafeInstallationError, assert_safe_distribution
+from telegram_mcp.proxy import ProxyConfigError, proxy_client_kwargs
 
 # How many times the QR code is regenerated after expiry before giving up.
 _QR_MAX_REFRESHES = 10
@@ -293,8 +294,28 @@ def main() -> None:
         print("  2) Phone number + verification code")
         method = input("\nEnter 1 or 2 [default: 1]: ").strip() or "1"
 
+    # Same TELEGRAM_PROXY_* (and TELEGRAM_PROXY_*_<LABEL>) settings as the server,
+    # so login works on networks where Telegram is only reachable via a proxy.
     try:
-        client = TelegramClient(StringSession(), API_ID, API_HASH, **client_identity_kwargs())
+        proxy_kwargs = proxy_client_kwargs(label or "default")
+    except ProxyConfigError as e:
+        print(f"\nError: {e}")
+        sys.exit(1)
+    if "proxy" in proxy_kwargs:
+        proxy = proxy_kwargs["proxy"]
+        if isinstance(proxy, dict):
+            print(f"\nUsing {proxy['proxy_type']} proxy {proxy['addr']}:{proxy['port']}")
+        else:
+            print(f"\nUsing MTProxy {proxy[0]}:{proxy[1]}")
+
+    try:
+        client = TelegramClient(
+            StringSession(),
+            API_ID,
+            API_HASH,
+            **proxy_kwargs,
+            **client_identity_kwargs(),
+        )
         client.connect()
 
         if not client.is_user_authorized():

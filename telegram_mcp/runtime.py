@@ -83,6 +83,11 @@ from functools import wraps
 import telethon.errors.rpcerrorlist
 from sanitize import sanitize_user_content, sanitize_name, sanitize_dict, format_tool_result
 from telegram_mcp.client_identity import client_identity_kwargs
+from telegram_mcp.proxy import (
+    ProxyConfigError,
+    build_proxy_for_label,
+    parse_bool_env as _parse_bool_env,
+)
 
 
 class ValidationError(Exception):
@@ -576,95 +581,17 @@ def _apply_file_extension_overrides(
 # ---------------------------------------------------------------------------
 
 
-_PROXY_TYPES_SOCKS_HTTP = {"socks5", "socks4", "http"}
-_PROXY_TYPES_ALL = _PROXY_TYPES_SOCKS_HTTP | {"mtproxy"}
-
-
-def _get_proxy_env(name: str, label: str) -> Optional[str]:
-    """Resolve a TELEGRAM_PROXY_* env var with optional ``_<LABEL>`` suffix.
-
-    Per-account values override the unsuffixed defaults so a global proxy can
-    coexist with per-label overrides.
-    """
-    suffixed = os.getenv(f"TELEGRAM_PROXY_{name}_{label.upper()}")
-    if suffixed:
-        return suffixed
-    return os.getenv(f"TELEGRAM_PROXY_{name}") or None
-
-
-def _parse_bool_env(value: Optional[str], default: bool) -> bool:
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _build_proxy_for_label(label: str) -> tuple[Optional[Any], Optional[Any]]:
     """Return ``(proxy, connection)`` kwargs for ``TelegramClient`` for a label.
 
-    Reads ``TELEGRAM_PROXY_*`` env vars (with optional ``_<LABEL>`` suffix).
-    Returns ``(None, None)`` when no proxy is configured. Raises
+    See :func:`telegram_mcp.proxy.build_proxy_for_label`. Raises
     :class:`ValidationError` for malformed configuration so the server fails
     fast instead of silently bypassing the proxy.
     """
-    proxy_type = _get_proxy_env("TYPE", label)
-    if not proxy_type:
-        return None, None
-
-    proxy_type = proxy_type.strip().lower()
-    if proxy_type not in _PROXY_TYPES_ALL:
-        raise ValidationError(
-            f"Invalid TELEGRAM_PROXY_TYPE '{proxy_type}'. "
-            f"Expected one of: {', '.join(sorted(_PROXY_TYPES_ALL))}."
-        )
-
-    host = _get_proxy_env("HOST", label)
-    port_raw = _get_proxy_env("PORT", label)
-    if not host or not port_raw:
-        raise ValidationError(
-            "TELEGRAM_PROXY_HOST and TELEGRAM_PROXY_PORT are required when "
-            "TELEGRAM_PROXY_TYPE is set."
-        )
     try:
-        port = int(port_raw)
-    except ValueError as exc:
-        raise ValidationError(
-            f"TELEGRAM_PROXY_PORT must be an integer, got '{port_raw}'."
-        ) from exc
-
-    if proxy_type == "mtproxy":
-        secret = _get_proxy_env("SECRET", label)
-        if not secret:
-            raise ValidationError("TELEGRAM_PROXY_SECRET is required for mtproxy.")
-        try:
-            from telethon.network import ConnectionTcpMTProxyRandomizedIntermediate
-        except ImportError as exc:  # pragma: no cover - defensive guard
-            raise ValidationError(
-                "Telethon MTProxy connection class is unavailable; upgrade telethon."
-            ) from exc
-        return (host, port, secret), ConnectionTcpMTProxyRandomizedIntermediate
-
-    # SOCKS4/SOCKS5/HTTP via python-socks (Telethon's optional dependency).
-    try:
-        import python_socks  # noqa: F401
-    except ImportError as exc:
-        raise ValidationError(
-            f"Proxy type '{proxy_type}' requires the 'python-socks' package. "
-            "Install it with `pip install python-socks` or `uv sync --extra proxy`."
-        ) from exc
-
-    proxy: dict[str, Any] = {
-        "proxy_type": proxy_type,
-        "addr": host,
-        "port": port,
-        "rdns": _parse_bool_env(_get_proxy_env("RDNS", label), default=True),
-    }
-    username = _get_proxy_env("USERNAME", label)
-    password = _get_proxy_env("PASSWORD", label)
-    if username:
-        proxy["username"] = username
-    if password:
-        proxy["password"] = password
-    return proxy, None
+        return build_proxy_for_label(label)
+    except ProxyConfigError as exc:
+        raise ValidationError(str(exc)) from exc
 
 
 def _get_flood_sleep_threshold() -> int:
